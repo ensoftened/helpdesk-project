@@ -1,0 +1,132 @@
+﻿import request from "supertest";
+import app from "../src/index";
+import prisma from "../src/config/prisma";
+
+let adminToken: string;
+let agentToken: string;
+let requesterToken: string;
+let adminId: string;
+let supportTeamId: string;
+
+async function login(email: string): Promise<string> {
+  const res = await request(app).post("/api/auth/login").send({ email, password: "password123" });
+  return res.body.data.accessToken;
+}
+
+beforeAll(async () => {
+  const a = await prisma.user.findUnique({ where: { email: "admin@helpdesk.com" } });
+  adminId = a!.id;
+  supportTeamId = (await prisma.team.findFirst({ where: { name: "IT Support" } }))!.id;
+  adminToken = await login("admin@helpdesk.com");
+  agentToken = await login("agent@helpdesk.com");
+  requesterToken = await login("requester@helpdesk.com");
+});
+
+describe("Admin permission enforcement", () => {
+  it("requester blocked from GET users", async () => {
+    const r = await request(app).get("/api/admin/users").set("Authorization", "Bearer " + requesterToken);
+    expect(r.status).toBe(403);
+  });
+  it("agent blocked from GET users", async () => {
+    const r = await request(app).get("/api/admin/users").set("Authorization", "Bearer " + agentToken);
+    expect(r.status).toBe(403);
+  });
+});
+
+describe("Admin user management", () => {
+  let uid: string;
+  it("creates a user", async () => {
+    const r = await request(app).post("/api/admin/users").set("Authorization", "Bearer " + adminToken)
+      .send({ email: "t1@t.com", password: "testpass1", name: "T1", role: "Requester" });
+    expect(r.status).toBe(201);
+    uid = r.body.id;
+  });
+  it("lists users", async () => {
+    const r = await request(app).get("/api/admin/users").set("Authorization", "Bearer " + adminToken);
+    expect(r.status).toBe(200);
+    expect(r.body.data.length).toBeGreaterThanOrEqual(8);
+  });
+  it("deactivates a user", async () => {
+    const r = await request(app).patch("/api/admin/users/" + uid).set("Authorization", "Bearer " + adminToken)
+      .send({ isActive: false });
+    expect(r.status).toBe(200);
+  });
+});
+
+describe("Deactivated user enforcement", () => {
+  it("deactivated user cannot login", async () => {
+    const cr = await request(app).post("/api/admin/users").set("Authorization", "Bearer " + adminToken)
+      .send({ email: "dead@t.com", password: "p1234567", name: "D", role: "Requester" });
+    const did = cr.body.id;
+    await request(app).patch("/api/admin/users/" + did).set("Authorization", "Bearer " + adminToken)
+      .send({ isActive: false });
+    const r = await request(app).post("/api/auth/login").send({ email: "dead@t.com", password: "p1234567" });
+    expect(r.status).toBe(401);
+  });
+});
+
+describe("Password reset", () => {
+  it("admin resets password", async () => {
+    const cr = await request(app).post("/api/admin/users").set("Authorization", "Bearer " + adminToken)
+      .send({ email: "pw@t.com", password: "oldp1234", name: "P", role: "Requester" });
+    const pid = cr.body.id;
+    await request(app).post("/api/admin/users/" + pid + "/reset-password").set("Authorization", "Bearer " + adminToken)
+      .send({ newPassword: "newp1234" });
+    const r1 = await request(app).post("/api/auth/login").send({ email: "pw@t.com", password: "oldp1234" });
+    expect(r1.status).toBe(401);
+    const r2 = await request(app).post("/api/auth/login").send({ email: "pw@t.com", password: "newp1234" });
+    expect(r2.status).toBe(200);
+  });
+});
+
+describe("Admin CRUD", () => {
+  let tid: string, cid: string, pid: string, sid: string;
+  it("creates team", async () => {
+    const r = await request(app).post("/api/admin/teams").set("Authorization", "Bearer " + adminToken)
+      .send({ name: "TMP" });
+    expect(r.status).toBe(201); tid = r.body.id;
+  });
+  it("deletes team", async () => {
+    const r = await request(app).delete("/api/admin/teams/" + tid).set("Authorization", "Bearer " + adminToken);
+    expect(r.status).toBe(200);
+  });
+  it("creates category", async () => {
+    const r = await request(app).post("/api/admin/categories").set("Authorization", "Bearer " + adminToken)
+      .send({ name: "TMPC" });
+    expect(r.status).toBe(201); cid = r.body.id;
+  });
+  it("deletes category", async () => {
+    const r = await request(app).delete("/api/admin/categories/" + cid).set("Authorization", "Bearer " + adminToken);
+    expect(r.status).toBe(200);
+  });
+  it("creates priority", async () => {
+    const r = await request(app).post("/api/admin/priorities").set("Authorization", "Bearer " + adminToken)
+      .send({ name: "TMPP", level: 99 });
+    expect(r.status).toBe(201); pid = r.body.id;
+  });
+  it("deletes priority", async () => {
+    const r = await request(app).delete("/api/admin/priorities/" + pid).set("Authorization", "Bearer " + adminToken);
+    expect(r.status).toBe(200);
+  });
+  it("creates SLA", async () => {
+    const pr = await request(app).post("/api/admin/priorities").set("Authorization", "Bearer " + adminToken)
+      .send({ name: "SLA-TMP", level: 98 });
+    const ppid = pr.body.id;
+    const r = await request(app).post("/api/admin/slas").set("Authorization", "Bearer " + adminToken)
+      .send({ priorityId: ppid, responseHours: 1, resolutionHours: 4 });
+    expect(r.status).toBe(201); sid = r.body.id;
+  });
+  it("deletes SLA", async () => {
+    const r = await request(app).delete("/api/admin/slas/" + sid).set("Authorization", "Bearer " + adminToken);
+    expect(r.status).toBe(200);
+  });
+});
+
+describe("Audit log entries", () => {
+  it("logs on create", async () => {
+    const b = await prisma.auditLog.count();
+    await request(app).post("/api/admin/users").set("Authorization", "Bearer " + adminToken)
+      .send({ email: "alog@t.com", password: "a1234567", name: "A", role: "Requester" });
+    expect(await prisma.auditLog.count()).toBeGreaterThan(b);
+  });
+});

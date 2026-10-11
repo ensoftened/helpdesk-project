@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: helpdesk-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      POSTGRES_DB: helpdesk
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Backend API server
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: helpdesk-api
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_PROVIDER: postgresql
+      DATABASE_URL: postgresql://helpdesk:helpdesk@postgres:5432/helpdesk
+      ACCESS_TOKEN_SECRET: change-me-access-secret
+      REFRESH_TOKEN_SECRET: change-me-refresh-secret
+      ACCESS_TOKEN_EXPIRES_IN: 15m
+      REFRESH_TOKEN_EXPIRES_IN: 7d
+      PORT: "3001"
+      NODE_ENV: development
+      CORS_ORIGIN: http://localhost:5173
+    depends_on:
+      - postgres
+
+  # Frontend web server
+  web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: helpdesk-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

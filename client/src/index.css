@@ -1,0 +1,17 @@
+/*
+  This file sets up Tailwind CSS in our project.
+  The three @tailwind directives tell Tailwind which parts to include:
+    - base:      CSS reset (normalizes default browser styles)
+    - components: reusable component styles
+    - utilities:  Tailwind's utility classes (like p-4, text-red-500)
+*/
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Custom base styles for the helpdesk app (using Tailwind's @apply)
+*/
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}

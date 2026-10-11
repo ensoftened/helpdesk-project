@@ -1,0 +1,236 @@
+// This file is the blueprint that Prisma uses to create our database tables.
+// Think of it like an architect's plan: you describe what you want in a
+// special language, and Prisma turns it into real database tables.
+
+// For local development, we hardcode SQLite. For Docker/production,
+// change this to "postgresql" and update DATABASE_URL.
+datasource db {
+  provider = "sqlite"                               // Database type
+  url      = env("DATABASE_URL")                    // Connection string from .env
+}
+
+// The generator block tells Prisma to create a TypeScript client library.
+// This client lets us write database queries in TypeScript instead of raw SQL.
+// Command: "npx prisma generate" creates the client from this schema.
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── ENUM: UserRole ────────────────────────────────────────────────
+// An enum is like a dropdown list: a column can only have one of these values.
+enum UserRole {
+  Requester
+  Agent
+  Admin
+}
+
+// ─── ENUM: TicketStatus ────────────────────────────────────────────
+// The lifecycle of a ticket. See docs/workflow.md for allowed transitions.
+enum TicketStatus {
+  Open
+  In_Progress              // Prisma uses _ instead of spaces in enum values
+  Waiting_on_Requester
+  Resolved
+  Closed
+  Reopened
+}
+
+// ─── TABLE: User ──────────────────────────────────────────────────
+// Everyone who uses the system: requesters, agents, and admins.
+model User {
+  id           String     @id @default(uuid()) // UUID v4 primary key
+  email        String     @unique              // Login email, must be unique
+  passwordHash String                            // Hashed password (never raw!)
+  name         String                            // Full name shown on tickets/comments
+  role         UserRole                          // What they're allowed to do
+  teamId       String?                           // FK to Team (NULL for Requesters)
+  isActive     Boolean    @default(true)         // false = blocked from logging in
+  createdAt    DateTime   @default(now())        // Account creation timestamp
+  updatedAt    DateTime   @updatedAt             // Auto-updated on any change
+
+  // Relationships (the other side of foreign keys)
+  team              Team?          @relation(fields: [teamId], references: [id])
+  createdTickets    Ticket[]       @relation("RequesterTickets")   // Tickets they filed
+  assignedTickets   Ticket[]       @relation("AssigneeTickets")    // Tickets they work on
+  comments          Comment[]                                       // All their comments
+  auditLogs         AuditLog[]                                      // Changes they made
+  attachments       Attachment[]                                     // Files they uploaded
+  refreshTokens     RefreshToken[]                                  // Their login tokens
+
+  @@index([teamId]) // Fast lookup: find all users in a team
+}
+
+// ─── TABLE: Team ──────────────────────────────────────────────────
+// Groups agents together (like a department). Tickets are routed to teams.
+model Team {
+  id          String    @id @default(uuid())
+  name        String    @unique               // e.g. "IT Support", must be unique
+  description String?                         // Optional: what this team handles
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relationships
+  users         User[]     // Agents who belong to this team
+  tickets       Ticket[]   // Tickets routed to this team
+  categories    Category[] @relation("DefaultTeam") // Categories that default-route to this team
+}
+
+// ─── TABLE: Category ──────────────────────────────────────────────
+// What type of issue the ticket is about. Admin-managed.
+model Category {
+  id             String    @id @default(uuid())
+  name           String    @unique               // e.g. "Hardware", "Software"
+  description    String?                         // Optional longer description
+  defaultTeamId  String?                         // FK: auto-route tickets to this team
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relationships
+  defaultTeam  Team?     @relation("DefaultTeam", fields: [defaultTeamId], references: [id])
+  tickets      Ticket[]   // Tickets in this category
+  slas         SLA[]      // SLA rules for this category
+}
+
+// ─── TABLE: Priority ──────────────────────────────────────────────
+// How urgent the ticket is. Admin-managed with numeric ordering.
+model Priority {
+  id        String    @id @default(uuid())
+  name      String    @unique               // e.g. "Low", "Medium", "High", "Urgent"
+  level     Int       @unique               // Higher number = more urgent
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relationships
+  tickets  Ticket[]   // Tickets with this priority
+  slas     SLA[]      // SLA rules for this priority
+}
+
+// ─── TABLE: Ticket ────────────────────────────────────────────────
+// The central table. Every help request becomes one ticket.
+model Ticket {
+  id          String       @id @default(uuid())
+  title       String                             // Short summary
+  description String                             // Full problem details
+  status      TicketStatus @default(Open)        // Where it is in the workflow
+  priorityId  String                              // FK to Priority
+  categoryId  String                              // FK to Category
+  requesterId String                              // FK to User (who filed it)
+  assigneeId  String?                             // FK to User (who's working on it, NULL = unassigned)
+  teamId      String?                             // FK to Team (responsible team)
+  dueAt       DateTime?                           // SLA deadline, NULL if no SLA applies
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relationships
+  priority   Priority  @relation(fields: [priorityId], references: [id])
+  category   Category  @relation(fields: [categoryId], references: [id])
+  requester  User      @relation("RequesterTickets", fields: [requesterId], references: [id])
+  assignee   User?     @relation("AssigneeTickets", fields: [assigneeId], references: [id])
+  team       Team?     @relation(fields: [teamId], references: [id])
+  comments   Comment[]
+  auditLogs  AuditLog[]
+  attachments Attachment[]
+
+  // Indexes for fast lookups
+  @@index([requesterId])                       // "Show me my tickets"
+  @@index([assigneeId])                        // "Show me tickets assigned to me"
+  @@index([teamId])                            // "Show me my team's tickets"
+  @@index([status])                            // Filter by status
+  @@index([priorityId])                        // Sort/filter by urgency
+  @@index([categoryId])                        // Filter by category
+  @@index([status, teamId])                    // Agent dashboard: "open tickets for my team"
+}
+// ─── TABLE: Comment ────────────────────────────────────────────────
+// Messages on a ticket. Can be public or internal (agents only).
+model Comment {
+  id         String    @id @default(uuid())
+  body       String                             // The comment text
+  isInternal Boolean   @default(false)          // true = agents/admins only
+  ticketId   String                             // FK to Ticket
+  userId     String                             // FK to User (author)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  // Relationships
+  ticket  Ticket  @relation(fields: [ticketId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([ticketId])                           // All comments on a ticket
+  @@index([userId])                             // Comments by a user
+  @@index([ticketId, createdAt])                // Chronological display
+}
+
+// ─── TABLE: AuditLog ──────────────────────────────────────────────
+// Records every change to a ticket. Like a paper trail for accountability.
+model AuditLog {
+  id              String    @id @default(uuid())
+  ticketId        String?                        // FK to Ticket (NULL for admin/system actions)
+  changedByUserId String                         // FK to User (who made the change)
+  field           String                         // What was changed: "status", "assignee", etc.
+  oldValue        String?                        // Previous value (NULL for first-time)
+  newValue        String                         // New value
+  createdAt       DateTime  @default(now())
+
+  // Relationships
+  ticket       Ticket? @relation(fields: [ticketId], references: [id])
+  changedByUser User   @relation(fields: [changedByUserId], references: [id])
+
+  @@index([ticketId])                           // History for a ticket
+  @@index([changedByUserId])                    // Changes made by a user
+  @@index([ticketId, createdAt])                // View history in order
+}
+
+// ─── TABLE: Attachment ────────────────────────────────────────────────
+// Files uploaded to a ticket. The actual file bytes are stored as
+// a BLOB (Binary Large OBject) in the 'data' column so everything
+// stays self-contained in the database — no filesystem dependency.
+model Attachment {
+  id        String   @id @default(uuid())
+  ticketId  String                              // FK to Ticket
+  userId    String                              // FK to User (who uploaded)
+  fileName  String                              // Original filename from the client
+  mimeType  String                              // e.g. "image/png", "application/pdf"
+  sizeBytes Int                                 // File size in bytes
+  data      Bytes                               // The actual file content (BLOB)
+  createdAt DateTime @default(now())
+
+  // Relationships
+  ticket  Ticket  @relation(fields: [ticketId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([ticketId])                           // All attachments on a ticket
+}
+
+// ─── TABLE: RefreshToken ──────────────────────────────────────────
+// Long-lived tokens so users stay logged in. The raw token goes to the
+// client; we store only the hashed version here.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  token     String    @unique                  // Hashed token, must be unique
+  userId    String                             // FK to User
+  expiresAt DateTime                           // When this token stops working
+  createdAt DateTime  @default(now())
+
+  // Relationships
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@index([userId])                             // Find all tokens for a user
+}
+
+// ─── TABLE: SLA (Service Level Agreement) ─────────────────────────
+// Defines response and resolution deadlines per category + priority.
+model SLA {
+  id              String    @id @default(uuid())
+  categoryId      String?                       // NULL = applies to ALL categories
+  priorityId      String                        // FK to Priority
+  responseHours   Int                           // Max hours until first response
+  resolutionHours Int                           // Max hours until resolution
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relationships
+  category  Category? @relation(fields: [categoryId], references: [id])
+  priority  Priority  @relation(fields: [priorityId], references: [id])
+
+  @@unique([categoryId, priorityId])            // One SLA rule per category+priority combo
+}

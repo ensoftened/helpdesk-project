@@ -1,0 +1,59 @@
+# Helpdesk/Ticketing System: Project Rules
+
+## What this project is
+A full-stack helpdesk/ticketing system built as a portfolio project. The owner is learning, so clarity matters more than cleverness.
+
+## Stack (strict, do not substitute or add alternatives)
+- Backend: Node.js + Express with TypeScript, in /server
+- Database: PostgreSQL, accessed through Prisma (schema, migrations, queries)
+- Frontend: React + TypeScript built with Vite, in /client
+- Styling: Tailwind CSS only (no other UI or component libraries)
+- Auth: JWT access tokens + refresh tokens, passwords hashed with argon2 or bcrypt
+- Validation: Zod on every endpoint
+- Docs: OpenAPI/Swagger
+- Tests: Jest + Supertest (backend, using a separate test database); Vitest + React Testing Library (frontend)
+- Infrastructure: Docker Compose (api, web, postgres)
+- Lint/format: ESLint + Prettier in both /server and /client
+
+Do not install a new package without telling me why it is needed first.
+
+## Code explanation rules (apply to every file)
+- Put a comment on every line of code, explaining in plain, simple language what it does.
+- Start every file with a header comment that explains, for a beginner:
+  1. What the file is for
+  2. How it fits into the rest of the project
+  3. Any new concept it uses (e.g. middleware, JWT, migration, foreign key), with a simple everyday analogy
+- Avoid jargon. Define any technical term the first time it appears.
+- Keep explanations accurate. Simple wording is fine, but never say something untrue to simplify.
+- For files that cannot hold comments (e.g. package.json), explain them in the chat reply.
+
+## Roles and permissions
+- Requester: create tickets; view, comment on, and close only their own tickets
+- Agent: view tickets assigned to their team; update status; assign to self; add public or internal comments
+- Admin: everything above, plus manage users, roles, teams, categories, priorities, and SLA rules
+- All permissions are enforced on the backend (Express middleware). The frontend may hide or disable actions, but the backend is the source of truth.
+- Internal comments must never be returned to requesters, in any endpoint.
+- Deactivated users cannot log in or use existing tokens.
+
+## Ticket workflow
+- Statuses: Open -> In Progress -> Waiting on Requester -> Resolved -> Closed, plus Reopened
+- Reject invalid status transitions on the server.
+- Every status change and its audit log entry are saved in one database transaction.
+- The allowed transitions live in one place (docs/workflow.md and a single constants file), not scattered across the code.
+
+## Conventions
+- Every endpoint validates input with Zod and returns errors in one consistent format: { "error": { "code": "...", "message": "..." } }
+- Never put secrets in code. Use .env, keep it in .gitignore, and commit only .env.example.
+- Rate-limit auth endpoints, use Helmet, and configure CORS for the Vite dev origin.
+- Use async/await, descriptive names, and small functions. Keep route handlers thin and put logic in service files.
+- Keep controllers, services, routes, and middleware in separate folders.
+
+## How to work
+- Work on one phase per task. Do not start the next phase on your own.
+- Before writing code for a phase, read the files in /docs.
+- Before changing the database schema or permission rules, list the files and tables that will be affected and wait for my approval.
+- Write tests for permission rules and status transitions before implementing them.
+- After implementing, run the tests and show me the real output. Never say something works without running it.
+- Keep /docs up to date: data-model.md, permissions.md, workflow.md, api.md.
+- At the end of each phase, tell me: what was built, how to run it, how to test it, and a short "what I learned in this phase" summary in plain language.
+- If a request is unclear or conflicts with these rules, ask before guessing.
